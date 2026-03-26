@@ -1,0 +1,12 @@
+fastapi
+uvicorn[standard]
+pymongo
+web3
+PyJWT
+python-dotenv
+Pillow
+ultralytics
+paddlepaddle
+paddleocr
+google-generativeai
+pytest
