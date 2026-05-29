@@ -1,5 +1,4 @@
-# 🛡️ AI-Powered Document Verification & Fraud Detection Platform
-
+# 🛡️ Blockchain based digital wallet and document verification
 ## 📌 Overview
 
 This project is a **Document Verification and Fraud Detection Platform** built to validate uploaded identity or official documents using a combination of:
