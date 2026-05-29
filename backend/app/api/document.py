@@ -11,6 +11,20 @@ router = APIRouter()
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
+def build_user_queries(user_id):
+    queries = [{"user_id": user_id}]
+    if isinstance(user_id, ObjectId):
+        queries.append({"user_id": str(user_id)})
+    return queries
+
+def get_latest_user_document_query(user_id, doc_type):
+    return {
+        "$and": [
+            {"$or": build_user_queries(user_id)},
+            {"doc_type": doc_type}
+        ]
+    }
+
 @router.post("/upload")
 def upload_document(
     file: UploadFile = File(...), 
@@ -35,58 +49,76 @@ def upload_document(
             if target_user:
                 expected_name = target_user.get("username", "")
         except:
-            pass
+            target_user_id = user_id
 
         # 1. Run AI Pipeline
         print(f"[SYSTEM] Local file locked -> {file_location}. Executing verification core... Expected Name: {expected_name}")
         result = process_document(file_location, doc_type, expected_name)
         print(f"[SYSTEM] Pipeline detached logic perfectly!")
         
-        # 2. Check if hash exists on Blockchain or local DB (Only if score >= 50)
-        print(f"[SYSTEM] Evaluation branch logic loaded. Duplication filter: {'ACTIVE' if result.get('total_score', 0) >= 50.0 else 'SKIPPED (Score < 50)'}")
-        
-        if result.get("total_score", 0) >= 50.0:
-            exists_on_chain = check_document_exists_on_blockchain(result["hash_value"])
-            existing_doc = db.documents.find_one({"hash_value": result["hash_value"]})
-            
-            if exists_on_chain or existing_doc:
-                print("[SYSTEM WARNING] Identical Document Cryptographic Hash pinpointed inside Database/Blockchain! Rejecting Upload as Duplicate.")
-                doc_id = str(existing_doc["_id"]) if existing_doc else None
-                return {
-                    "success": True,
-                    "message": "Verification completed",
-                    "data": {
-                        "ocr_score": result.get("ocr_score", 0),
-                        "ai_score": result.get("ai_score", 0),
-                        "total_score": result.get("total_score", 0),
-                        "status": "approved" if exists_on_chain else "pending",
-                        "blockchain_status": "Duplicate",
-                        "transaction_hash": existing_doc.get("blockchain_tx_hash") if existing_doc else None,
-                        "doc_id": doc_id,
-                        "doc_type": result.get("doc_type"),
-                        "hash_value": result.get("hash_value")
-                    }
-                }
-            
-        # 3. Save to MongoDB
-        print("[DATABASE] Securing completely new Document into MongoDB ledger...")
+        # 2. Prepare version metadata before any approval / duplicate branch
+        print("[DATABASE] Preparing version metadata for the uploaded document...")
         document_data = result
         try:
             document_data["user_id"] = ObjectId(user_id)
         except:
             document_data["user_id"] = user_id
-            
+
+        latest_existing_doc = db.documents.find_one(
+            get_latest_user_document_query(document_data["user_id"], doc_type),
+            sort=[("version", -1), ("created_at", -1), ("_id", -1)]
+        )
+        next_version = (latest_existing_doc.get("version", 0) + 1) if latest_existing_doc else 1
+
+        db.documents.update_many(
+            get_latest_user_document_query(document_data["user_id"], doc_type),
+            {"$set": {"is_latest": False}}
+        )
+
         document_data["owner_id"] = str(current_user["id"])
         document_data["file_url"] = file_location
         document_data["original_filename"] = file.filename
-        
+        document_data["version"] = next_version
+        document_data["is_latest"] = True
+
+        # 3. Check if hash exists on Blockchain or local DB (Only if score >= 50)
+        print(f"[SYSTEM] Evaluation branch logic loaded. Duplication filter: {'ACTIVE' if result.get('total_score', 0) >= 50.0 else 'SKIPPED (Score < 50)'}")
+
+        exists_on_chain = False
+        existing_doc = None
+        if result.get("total_score", 0) >= 50.0:
+            exists_on_chain = check_document_exists_on_blockchain(result["hash_value"])
+            existing_doc = db.documents.find_one({"hash_value": result["hash_value"]})
+
+        # 4. Save to MongoDB
+        print("[DATABASE] Securing completely new Document into MongoDB ledger...")
         inserted = db.documents.insert_one(document_data)
         print(f"[DATABASE] Saved successfully! Native Mongodb ID -> {inserted.inserted_id}")
-        
-        # If score >= 50, proceed to blockchain automatically
+
+        # If score >= 50, proceed to blockchain automatically unless this is a known duplicate
         blockchain_status = "Not Stored"
         transaction_hash = None
-        if document_data["status"] == "Pending Blockchain":
+        requires_wallet_approval = False
+
+        if exists_on_chain or existing_doc:
+            print("[SYSTEM NOTICE] Matching document hash already exists. Saving as a new version and reusing existing verification state.")
+            transaction_hash = (existing_doc or {}).get("blockchain_tx_hash")
+            blockchain_status = "Duplicate"
+
+            if exists_on_chain or transaction_hash:
+                document_data["status"] = "Approved"
+                document_data["blockchain_tx_hash"] = transaction_hash
+                db.documents.update_one(
+                    {"_id": inserted.inserted_id},
+                    {"$set": {"status": "Approved", "blockchain_tx_hash": transaction_hash, "duplicate_of_hash": result["hash_value"]}}
+                )
+            else:
+                document_data["status"] = "Pending"
+                db.documents.update_one(
+                    {"_id": inserted.inserted_id},
+                    {"$set": {"status": "Pending", "duplicate_of_hash": result["hash_value"]}}
+                )
+        elif document_data["status"] == "Pending Blockchain":
             print(f"[BLOCKCHAIN] Document logic triggers automated Sepolia verification integration...")
             tx_hash = store_document_hash_on_blockchain(document_data["hash_value"], document_data["doc_type"])
             print(f"[BLOCKCHAIN] Successfully validated. Extracted Tx Hash: {tx_hash}")
@@ -98,6 +130,7 @@ def upload_document(
             document_data["blockchain_tx_hash"] = tx_hash
             blockchain_status = "Stored Successfully"
             transaction_hash = tx_hash
+            requires_wallet_approval = True
             
         document_data["_id"] = str(inserted.inserted_id)
         if "user_id" in document_data:
@@ -106,18 +139,24 @@ def upload_document(
         data_res = {
             "ocr_score": document_data.get("ocr_score", 0),
             "ai_score": document_data.get("ai_score", 0),
+            "ml_score": document_data.get("ml_score", 0),
             "total_score": document_data.get("total_score", 0),
             "status": "approved" if document_data["status"] == "Approved" else "pending",
             "blockchain_status": blockchain_status,
             "transaction_hash": transaction_hash,
             "doc_type": document_data.get("doc_type"),
-            "hash_value": document_data.get("hash_value")
+            "hash_value": document_data.get("hash_value"),
+            "version": document_data.get("version", 1),
+            "doc_id": document_data.get("_id"),
+            "requires_wallet_approval": requires_wallet_approval
         }
             
         print("[ROUTE COMPLETION] Upload cycle formally completed and returned natively!")
         print("="*50)
         return {"success": True, "message": "Verification completed", "data": data_res}
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[CRITICAL UPLOAD FAULT] Failed explicitly at: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -196,10 +235,35 @@ def get_documents(current_user: dict = Depends(get_current_user)):
             user_oid = ObjectId(current_user["id"])
         except:
             user_oid = current_user["id"]
-        docs = list(db.documents.find({"user_id": user_oid, "status": "Approved"}))
+
+        docs = list(
+            db.documents.find(
+                {
+                    "$and": [
+                        {"$or": build_user_queries(user_oid)},
+                        {"is_latest": True}
+                    ]
+                }
+            ).sort([("created_at", -1), ("version", -1), ("_id", -1)])
+        )
+
+        # Backward-compatible fallback for older records that do not yet have is_latest.
+        if not docs:
+            raw_docs = list(
+                db.documents.find(
+                    {"$or": build_user_queries(user_oid)}
+                ).sort([("created_at", -1), ("version", -1), ("_id", -1)])
+            )
+
+            latest_by_type = {}
+            for doc in raw_docs:
+                doc_type = doc.get("doc_type", doc.get("document_type", "Unknown"))
+                if doc_type not in latest_by_type:
+                    latest_by_type[doc_type] = doc
+            docs = list(latest_by_type.values())
     else:
         # Admin or Super Admin can see all
-        docs = list(db.documents.find())
+        docs = list(db.documents.find().sort([("created_at", -1), ("_id", -1)]))
         
     # Serialize ObjectId to string and enrich username dynamically
     for d in docs:
@@ -236,4 +300,3 @@ def download_document(id: str, current_user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=404, detail="File lost or unreadable from storage")
         
     return FileResponse(path=file_path, filename=doc.get("original_filename", "document"), media_type='application/octet-stream')
-

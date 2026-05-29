@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Optional
 from datetime import datetime, timezone
 
@@ -24,3 +24,16 @@ class UserCreateUser(BaseModel):
     email: EmailStr
     password: str
     aadhaar_number: str
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: EmailStr) -> str:
+        return str(value).strip().lower()
+
+    @field_validator("aadhaar_number")
+    @classmethod
+    def validate_aadhaar_number(cls, value: str) -> str:
+        aadhaar_number = value.strip()
+        if not aadhaar_number.isdigit() or len(aadhaar_number) != 12:
+            raise ValueError("Aadhaar number must be exactly 12 digits")
+        return aadhaar_number

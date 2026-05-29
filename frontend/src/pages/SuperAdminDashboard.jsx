@@ -1,18 +1,50 @@
 import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { useLocation } from 'react-router-dom';
-import { UserPlus, CheckCircle, XCircle, Loader2, Trash2, Eye } from 'lucide-react';
+import { UserPlus, CheckCircle, XCircle, Loader2, Trash2, Eye, FileText, X, DownloadCloud } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
+import { useMetaMask } from '../context/MetaMaskContext';
 
 export default function SuperAdminDashboard() {
+  const { isConnected, sendApprovalTransaction } = useMetaMask();
   const [documents, setDocuments] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [loadingDocs, setLoadingDocs] = useState(false);
   const [loadingAdmins, setLoadingAdmins] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [processingId, setProcessingId] = useState(null);
+  const [viewDoc, setViewDoc] = useState(null);
+  const [viewDocUrl, setViewDocUrl] = useState(null);
+  const [loadingImage, setLoadingImage] = useState(false);
   
   const [adminForm, setAdminForm] = useState({ name: '', email: '', password: '' });
+
+  useEffect(() => {
+    if (viewDoc) {
+      const fetchImage = async () => {
+        setLoadingImage(true);
+        try {
+          const token = localStorage.getItem('token');
+          const response = await axios.get(`http://localhost:8000/api/documents/${viewDoc._id}/download`, {
+            headers: { Authorization: `Bearer ${token}` },
+            responseType: 'blob'
+          });
+          const url = window.URL.createObjectURL(new Blob([response.data]));
+          setViewDocUrl(url);
+        } catch (err) {
+          toast.error("Failed to load document preview");
+        } finally {
+          setLoadingImage(false);
+        }
+      };
+      fetchImage();
+    } else {
+      if (viewDocUrl) {
+          window.URL.revokeObjectURL(viewDocUrl);
+          setViewDocUrl(null);
+      }
+    }
+  }, [viewDoc]);
   
   const location = useLocation();
   // Determine active tab based on route
@@ -63,8 +95,29 @@ export default function SuperAdminDashboard() {
   };
 
   const handleApprove = async (docId) => {
+    const doc = documents.find(d => d._id === docId);
+    if (!doc) {
+      toast.error("Document not found");
+      return;
+    }
+
+    if (!isConnected) {
+        toast.error("Please connect your MetaMask wallet first using the button in the header!");
+        return;
+    }
+
     setProcessingId(docId);
-    const loadingToast = toast.loading('Securing approval on Blockchain...');
+    
+    // 1. Trigger MetaMask lightweight transaction approval
+    try {
+      await sendApprovalTransaction(doc.hash_value, doc.doc_type || doc.document_type || "Unknown");
+    } catch (txErr) {
+      toast.error(txErr.message || "MetaMask verification request rejected/failed.");
+      setProcessingId(null);
+      return;
+    }
+
+    const loadingToast = toast.loading('Securing manual approval and anchor on Blockchain...');
     try {
       const token = localStorage.getItem('token');
       const res = await axios.put(`http://localhost:8000/api/superadmin/approve-document/${docId}`, {}, {
@@ -157,6 +210,27 @@ export default function SuperAdminDashboard() {
       }
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to delete admin', { id: loadingToast });
+    }
+  };
+
+  const handleDownload = async (docId, filename) => {
+    try {
+      const loadingToast = toast.loading('Downloading...');
+      const token = localStorage.getItem('token');
+      const response = await axios.get(`http://localhost:8000/api/documents/${docId}/download`, {
+        headers: { Authorization: `Bearer ${token}` },
+        responseType: 'blob'
+      });
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename || 'document');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      toast.success("Download started", { id: loadingToast });
+    } catch (err) {
+      toast.error("Failed to download document");
     }
   };
 
@@ -257,7 +331,7 @@ export default function SuperAdminDashboard() {
         <thead>
           <tr className="bg-slate-50 border-b border-slate-200 text-xs uppercase tracking-wider text-slate-500 font-bold">
             <th className="p-6 w-1/3">Document Details</th>
-            <th className="p-6 w-1/4">AI Scores</th>
+            <th className="p-6 w-1/4">Verification Score</th>
             <th className="p-6 w-1/6">Status</th>
             <th className="p-6 w-1/4 text-right">Actions</th>
           </tr>
@@ -278,10 +352,10 @@ export default function SuperAdminDashboard() {
                   <>
                     <div className="flex items-center space-x-2">
                       <span className="text-sm font-bold text-slate-700">{(doc.total_score).toFixed(1)}</span>
-                      <span className="text-xs text-slate-400">/ 70 API Base Check</span>
+                      <span className="text-xs text-slate-400">/ 100 API Base Check</span>
                     </div>
                     <div className="w-24 bg-slate-200 rounded-full h-1.5 mt-2">
-                       <div className={`h-1.5 rounded-full ${doc.total_score >= 50 ? 'bg-green-500' : 'bg-orange-500'}`} style={{width: `${Math.min((doc.total_score/70)*100, 100)}%`}}></div>
+                       <div className={`h-1.5 rounded-full ${doc.total_score >= 60 ? 'bg-green-500' : 'bg-orange-500'}`} style={{width: `${Math.min((doc.total_score/100)*100, 100)}%`}}></div>
                     </div>
                   </>
                 ) : (
@@ -299,9 +373,9 @@ export default function SuperAdminDashboard() {
               </td>
               <td className="p-6 text-right space-x-2">
                 <div className="flex justify-end items-center gap-2">
-                  <a href={`http://localhost:8000/api/documents/${doc._id}/download`} target="_blank" rel="noopener noreferrer" className="text-slate-500 hover:text-indigo-600 p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition-colors" title="View Document Image" onClick={(e) => { e.stopPropagation(); }}>
+                  <button onClick={(e) => { e.preventDefault(); e.stopPropagation(); setViewDoc(doc); }} className="text-slate-500 hover:text-indigo-600 p-1.5 rounded-full bg-slate-100 hover:bg-slate-200 transition-colors" title="View Document Image">
                     <Eye size={18} />
-                  </a>
+                  </button>
                   {doc.status !== 'Approved' && doc.status !== 'Rejected' ? (
                     <>
                       <button onClick={() => handleApprove(doc._id)} disabled={processingId === doc._id} className="bg-green-100 hover:bg-green-200 text-green-700 px-3 py-1.5 rounded text-sm font-bold transition-colors disabled:opacity-50 flex items-center">
@@ -358,6 +432,67 @@ export default function SuperAdminDashboard() {
       {currentTab === 'dashboard' && renderDocumentTable(documents)}
       {currentTab === 'pending' && renderDocumentTable(pendingDocs)}
       {currentTab === 'all' && renderAdminsTable()}
+
+      {viewDoc && (
+        <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+           <div className="bg-white rounded-3xl shadow-xl w-full max-w-2xl overflow-hidden animation-fade-in">
+              <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                 <h2 className="text-lg font-bold text-slate-800 flex items-center gap-2"><FileText size={20} className="text-indigo-600" /> Document Viewer</h2>
+                 <button onClick={() => setViewDoc(null)} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"><X size={20} /></button>
+              </div>
+              <div className="p-8">
+                 <div className="grid grid-cols-2 gap-6 mb-8">
+                    <div className="col-span-2 md:col-span-1">
+                        <p className="text-xs font-bold text-slate-400 mb-1 tracking-wider uppercase">Document Type</p>
+                        <p className="font-bold text-slate-800 text-lg">{viewDoc.doc_type || viewDoc.document_type || 'Unknown'}</p>
+                    </div>
+                    <div className="col-span-2 md:col-span-1">
+                        <p className="text-xs font-bold text-slate-400 mb-1 tracking-wider uppercase">Status</p>
+                        <p className="font-bold text-slate-800 text-lg">{viewDoc.status}</p>
+                    </div>
+                    
+                    <div className="col-span-2 mt-2 mb-4 bg-slate-100 rounded-xl flex items-center justify-center overflow-hidden border border-slate-200 relative" style={{minHeight: "200px", maxHeight: "400px"}}>
+                        {viewDocUrl && !loadingImage && (
+                            <button onClick={() => setViewDoc(null)} className="absolute top-3 right-3 p-1.5 bg-white/90 hover:bg-red-50 text-slate-500 hover:text-red-500 rounded-full shadow-md z-10 transition-colors" title="Close Preview">
+                               <X size={20} />
+                            </button>
+                        )}
+                        {loadingImage ? (
+                            <div className="text-slate-400 flex flex-col items-center p-8">
+                               <div className="w-8 h-8 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin mb-2"></div>
+                               <span className="font-semibold text-sm">Loading visual preview...</span>
+                            </div>
+                        ) : viewDocUrl ? (
+                            <img src={viewDocUrl} alt="Document Preview" className="object-contain w-full h-full hover:scale-105 transition-transform duration-500" style={{maxHeight: '400px'}} />
+                        ) : (
+                            <span className="text-slate-400 font-medium p-8">Preview not available</span>
+                        )}
+                    </div>
+
+                    <div className="col-span-2 bg-slate-50 rounded-xl p-5 border border-slate-100">
+                        <p className="text-xs font-bold text-slate-400 mb-3 tracking-wider uppercase">Verification Details</p>
+                        <div className="flex justify-between items-center bg-white p-3 rounded-lg border border-slate-200 font-mono text-sm mb-2 shadow-sm">
+                            <span className="text-slate-500 font-sans font-semibold">Total Match Score</span>
+                            <span className="font-bold text-indigo-600">{(viewDoc.total_score || 0).toFixed(1)} / 100</span>
+                        </div>
+                        {viewDoc.ai_feedback && <p className="text-sm text-slate-600 mt-4 leading-relaxed bg-indigo-50/50 p-4 rounded-lg">{viewDoc.ai_feedback}</p>}
+                    </div>
+                 </div>
+                 
+                 <div className="flex justify-end gap-3 pt-4 border-t border-slate-100">
+                    <button onClick={() => setViewDoc(null)} className="px-5 py-2 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100 transition-colors">Close</button>
+                    {(viewDoc.status === 'Approved' || viewDoc.status === 'Rejected' || viewDoc.status === 'Pending') && (
+                        <button onClick={() => {
+                            handleDownload(viewDoc._id, viewDoc.original_filename);
+                        }} className="px-5 py-2 rounded-xl text-sm font-bold bg-indigo-600 hover:bg-indigo-700 text-white shadow-md transition-colors flex items-center gap-2">
+                           <DownloadCloud size={18} /> Download Copy
+                        </button>
+                    )}
+                 </div>
+              </div>
+           </div>
+        </div>
+      )}
 
     </div>
   );

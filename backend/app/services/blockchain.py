@@ -98,14 +98,19 @@ def store_document_hash_on_blockchain(doc_hash: str, doc_type: str, owner_addres
         bytes32_hash = Web3.to_bytes(hexstr=doc_hash) if doc_hash.startswith('0x') else Web3.to_bytes(hexstr='0x' + doc_hash)
         
         # Build transaction
-        nonce = w3.eth.get_transaction_count(account.address)
+        nonce = w3.eth.get_transaction_count(account.address, 'pending')
         
-        # We need to estimate gas, or provide a default for Sepolia
+        # We need to estimate gas dynamically based on Sepolia network
+        latest_block = w3.eth.get_block('latest')
+        base_fee = latest_block.get('baseFeePerGas', w3.to_wei('2', 'gwei'))
+        max_priority_fee = w3.to_wei('3', 'gwei')
+        max_fee = base_fee * 2 + max_priority_fee
+        
         txn = contract.functions.addDocument(bytes32_hash, doc_type, default_owner).build_transaction({
             'chainId': 11155111, # Sepolia chain ID
-            'gas': 2000000,
-            'maxFeePerGas': w3.to_wei('2', 'gwei'),
-            'maxPriorityFeePerGas': w3.to_wei('1', 'gwei'),
+            'gas': 500000,
+            'maxFeePerGas': max_fee,
+            'maxPriorityFeePerGas': max_priority_fee,
             'nonce': nonce,
         })
         
@@ -115,6 +120,15 @@ def store_document_hash_on_blockchain(doc_hash: str, doc_type: str, owner_addres
         # Send transaction
         tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
         
+        print(f"[BLOCKCHAIN] Transaction submitted, waiting up to 120s for mining... ({w3.to_hex(tx_hash)})")
+        
+        from web3.exceptions import TimeExhausted
+        try:
+            w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+            print(f"[BLOCKCHAIN] Block mined successfully for txn: {w3.to_hex(tx_hash)}")
+        except TimeExhausted:
+            print(f"[BLOCKCHAIN WARNING] Timeout waiting for receipt, but transaction {w3.to_hex(tx_hash)} was successfully broadcast to the network. Proceeding with optimistic confirmation.")
+            
         # Return transaction hash (hex)
         return w3.to_hex(tx_hash)
         

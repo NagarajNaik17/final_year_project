@@ -5,6 +5,27 @@ from solcx import compile_standard, install_solc
 
 load_dotenv()
 
+def update_env_value(env_file, key, value):
+    if not os.path.exists(env_file):
+        lines = []
+    else:
+        with open(env_file, "r") as f:
+            lines = f.readlines()
+
+    key_prefix = f"{key}="
+    updated = False
+
+    with open(env_file, "w") as f:
+        for line in lines:
+            if line.startswith(key_prefix):
+                f.write(f"{key}={value}\n")
+                updated = True
+            else:
+                f.write(line)
+
+        if not updated:
+            f.write(f"{key}={value}\n")
+
 def deploy():
     print("Installing solc 0.8.20...")
     install_solc("0.8.20")
@@ -66,19 +87,10 @@ def deploy():
     contract_address = tx_receipt.contractAddress
     print(f"Contract deployed successfully at address: {contract_address}")
 
-    # Update .env
-    env_file = ".env"
-    with open(env_file, "r") as f:
-        lines = f.readlines()
+    update_env_value(".env", "CONTRACT_ADDRESS", contract_address)
+    update_env_value("../frontend/.env", "VITE_CONTRACT_ADDRESS", contract_address)
 
-    with open(env_file, "w") as f:
-        for line in lines:
-            if line.startswith("CONTRACT_ADDRESS="):
-                f.write(f"CONTRACT_ADDRESS={contract_address}\n")
-            else:
-                f.write(line)
-    
-    print("Updated .env with the new CONTRACT_ADDRESS")
+    print("Updated backend/.env and frontend/.env with the new contract address")
 
 if __name__ == "__main__":
     deploy()

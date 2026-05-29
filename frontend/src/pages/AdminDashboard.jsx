@@ -3,8 +3,30 @@ import axios from 'axios';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { UserPlus, UploadCloud, FileText, CheckCircle, XCircle, Loader2, Users } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
+import { useMetaMask } from '../context/MetaMaskContext';
+
+const AADHAAR_REGEX = /^\d{12}$/;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const getErrorMessage = (error, fallbackMessage) => {
+  const detail = error?.response?.data?.detail;
+
+  if (typeof detail === 'string' && detail.trim()) {
+    return detail;
+  }
+
+  if (Array.isArray(detail) && detail.length > 0) {
+    return detail
+      .map((item) => item?.msg)
+      .filter(Boolean)
+      .join(', ');
+  }
+
+  return fallbackMessage;
+};
 
 export default function AdminDashboard() {
+  const { isConnected, sendApprovalTransaction } = useMetaMask();
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [documents, setDocuments] = useState([]);
@@ -79,18 +101,33 @@ export default function AdminDashboard() {
 
   const handleCreateUser = async (e) => {
     e.preventDefault();
+    const normalizedEmail = userForm.email.trim().toLowerCase();
+    const sanitizedAadhaarNumber = userForm.aadhaar_number.replace(/\D/g, '');
+
+    if (!EMAIL_REGEX.test(normalizedEmail)) {
+      toast.error('Please enter a valid email address');
+      return;
+    }
+
+    if (!AADHAAR_REGEX.test(sanitizedAadhaarNumber)) {
+      toast.error('Aadhaar number must be exactly 12 digits');
+      return;
+    }
+
     setIsSubmitting(true);
     const loadingToast = toast.loading('Creating user...');
     try {
       const res = await axios.post('http://localhost:8000/api/auth/register/user', {
         ...userForm,
+        email: normalizedEmail,
+        aadhaar_number: sanitizedAadhaarNumber,
         role: "User"
       });
       toast.success("User created successfully", { id: loadingToast });
       setUserForm({ username: '', email: '', password: '', aadhaar_number: '' });
       navigate('/admin/users');
     } catch (error) {
-      toast.error(error.response?.data?.detail || "Failed to create User", { id: loadingToast });
+      toast.error(getErrorMessage(error, "Failed to create User"), { id: loadingToast });
     } finally {
       setIsSubmitting(false);
     }
@@ -107,9 +144,15 @@ export default function AdminDashboard() {
         toast.error("Please select a file to upload");
         return;
     }
+
+    if (!isConnected) {
+        toast.error("Please connect your MetaMask wallet first using the button in the header!");
+        return;
+    }
+
     setIsSubmitting(true);
-    const loadingToast = toast.loading('Running 70-Point Verification Pipeline (OCR + Gemini)...');
-    
+    const loadingToast = toast.loading('Running 100-Point Verification Pipeline (OCR + Gemini + YOLO)...');
+
     const formData = new FormData();
     formData.append('file', uploadFile);
     formData.append('user_id', selectedUserId);
@@ -123,10 +166,30 @@ export default function AdminDashboard() {
           'Authorization': `Bearer ${token}`
         }
       });
-      toast.success("AI Verification Complete", { id: loadingToast });
-      setUploadResult(res.data.data);
+      
+      const resultData = res.data.data;
+
+      // Any approved upload should request the MetaMask confirmation popup.
+      if (resultData && resultData.status === 'approved') {
+        const approvalMessage = resultData.blockchain_status === 'Duplicate'
+          ? `Document saved as version v${resultData.version || 1}. Reconfirming via MetaMask...`
+          : 'AI pipeline verification passed! Securing MetaMask approval...';
+        toast.loading(approvalMessage, { id: loadingToast });
+        
+        try {
+          await sendApprovalTransaction(resultData.hash_value, resultData.doc_type || docType);
+          toast.success("AI Verification & Blockchain Anchor Complete", { id: loadingToast });
+        } catch (txErr) {
+          toast.error(txErr.message || "MetaMask transaction rejected/failed.", { id: loadingToast });
+        }
+      } else {
+        // Document failed auto-approval (score < 60) and is pending review by Super Admin
+        toast.success("Document submitted for Manual Review (Pipeline Score < 60)", { id: loadingToast, duration: 5000 });
+      }
+
+      setUploadResult(resultData);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Upload pipeline failed.', { id: loadingToast });
+      toast.error(getErrorMessage(error, 'Upload pipeline failed.'), { id: loadingToast });
     } finally {
       setIsSubmitting(false);
     }
@@ -195,8 +258,38 @@ export default function AdminDashboard() {
       <h2 className="text-2xl font-bold mb-6 flex items-center gap-2"><UserPlus /> Create New User</h2>
       <form onSubmit={handleCreateUser} className="space-y-4">
         <div><label className="block text-sm font-semibold mb-1">Username</label><input type="text" required value={userForm.username} onChange={e => setUserForm({...userForm, username: e.target.value})} className="w-full p-2 border rounded-lg" disabled={isSubmitting} /></div>
-        <div><label className="block text-sm font-semibold mb-1">Email</label><input type="email" required value={userForm.email} onChange={e => setUserForm({...userForm, email: e.target.value})} className="w-full p-2 border rounded-lg" disabled={isSubmitting} /></div>
-        <div><label className="block text-sm font-semibold mb-1">Aadhaar Number</label><input type="text" required value={userForm.aadhaar_number} onChange={e => setUserForm({...userForm, aadhaar_number: e.target.value})} className="w-full p-2 border rounded-lg" disabled={isSubmitting} /></div>
+        <div>
+          <label className="block text-sm font-semibold mb-1">Email</label>
+          <input
+            type="email"
+            required
+            value={userForm.email}
+            onChange={e => setUserForm({...userForm, email: e.target.value})}
+            className="w-full p-2 border rounded-lg"
+            disabled={isSubmitting}
+          />
+          <p className="text-xs text-slate-500 mt-1">Enter a valid email address.</p>
+        </div>
+        <div>
+          <label className="block text-sm font-semibold mb-1">Aadhaar Number</label>
+          <input
+            type="text"
+            required
+            inputMode="numeric"
+            maxLength={12}
+            pattern="\d{12}"
+            title="Aadhaar number must be exactly 12 digits"
+            placeholder="Enter 12-digit Aadhaar number"
+            value={userForm.aadhaar_number}
+            onChange={e => setUserForm({
+              ...userForm,
+              aadhaar_number: e.target.value.replace(/\D/g, '').slice(0, 12)
+            })}
+            className="w-full p-2 border rounded-lg"
+            disabled={isSubmitting}
+          />
+          <p className="text-xs text-slate-500 mt-1">Aadhaar number must be exactly 12 digits.</p>
+        </div>
         <div><label className="block text-sm font-semibold mb-1">Password</label><input type="password" required value={userForm.password} onChange={e => setUserForm({...userForm, password: e.target.value})} className="w-full p-2 border rounded-lg" disabled={isSubmitting} /></div>
         <button type="submit" disabled={isSubmitting} className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-400 text-white p-2 flex justify-center items-center rounded-lg font-bold transition-colors">
           {isSubmitting ? <><Loader2 className="animate-spin mr-2" size={20} /> Creating...</> : "Create User"}
@@ -209,12 +302,11 @@ export default function AdminDashboard() {
     <div className="max-w-3xl space-y-6">
       <div className="bg-white p-8 rounded-2xl shadow-sm border border-slate-200">
         <h2 className="text-xl font-bold mb-6 text-slate-800">Upload Document for Verification</h2>
-        <div className="mb-6">
+         <div className="mb-6">
           <label className="block text-sm font-semibold mb-2 text-slate-700">Select Document Type</label>
           <select value={docType} onChange={e => setDocType(e.target.value)} disabled={isSubmitting} className="w-full p-3 border border-slate-200 rounded-xl bg-slate-50 font-medium">
              <option value="aadhaar">Aadhaar Card</option>
              <option value="pan">PAN Card</option>
-             <option value="voter">Voter ID</option>
           </select>
         </div>
 
@@ -224,6 +316,12 @@ export default function AdminDashboard() {
           <p className="text-sm text-slate-400">PNG, JPG up to 10MB</p>
           <input type="file" ref={fileInputRef} className="hidden" onChange={handleFileChange} accept="image/*" disabled={isSubmitting} />
         </div>
+
+        {uploadFile && (
+          <div className="mt-6 flex justify-center">
+            <img src={URL.createObjectURL(uploadFile)} alt="Document Preview" className="max-h-64 rounded-xl shadow-md border border-slate-200" />
+          </div>
+        )}
 
         {uploadFile && (
           <div className="mt-6 flex items-center justify-between p-4 bg-slate-50 rounded-xl border border-slate-200">
@@ -247,11 +345,17 @@ export default function AdminDashboard() {
             <div className="col-span-2 space-y-4 text-slate-700 text-sm">
                <div className="flex justify-between font-semibold border-b pb-2 border-slate-100">
                  <span>OCR Score:</span>
-                 <span className="font-mono">{(uploadResult.ocr_score || 0).toFixed(0)}/20</span>
+                 <span className="font-mono">{(uploadResult.ocr_score || 0).toFixed(0)}/30</span>
                </div>
+               {uploadResult.ai_score > 0 && (
+                 <div className="flex justify-between font-semibold border-b pb-2 border-slate-100">
+                   <span>Legacy AI Score:</span>
+                   <span className="font-mono">{(uploadResult.ai_score || 0).toFixed(0)}/50</span>
+                 </div>
+               )}
                <div className="flex justify-between font-semibold border-b pb-2 border-slate-100">
-                 <span>AI Score:</span>
-                 <span className="font-mono">{(uploadResult.ai_score || 0).toFixed(0)}/50</span>
+                 <span>ML Score:</span>
+                 <span className="font-mono">{(uploadResult.ml_score || 0).toFixed(0)}/70</span>
                </div>
                <div className="flex justify-between font-bold text-lg mb-4 text-slate-800">
                  <span>Total:</span>
@@ -306,8 +410,8 @@ export default function AdminDashboard() {
               <td className="p-6 font-bold text-slate-800">{doc.doc_type || 'Unknown'}</td>
               <td className="p-6 font-mono text-xs text-slate-500">{doc.user_id}</td>
               <td className="p-6 font-bold flex items-center gap-2">
-                {(doc.total_score || 0).toFixed(1)} <span className="text-xs text-slate-400 font-normal">/ 70</span>
-                {doc.total_score >= 50 ? <CheckCircle size={16} className="text-green-500"/> : <XCircle size={16} className="text-orange-500"/>}
+                {(doc.total_score || 0).toFixed(1)} <span className="text-xs text-slate-400 font-normal">/ 100</span>
+                {doc.total_score >= 60 ? <CheckCircle size={16} className="text-green-500"/> : <XCircle size={16} className="text-orange-500"/>}
               </td>
               <td className="p-6">
                 <div className="mb-1"><span className={`px-3 py-1 text-xs font-bold rounded-full ${doc.status === 'Approved' ? 'bg-green-50 text-green-700' : doc.status === 'Rejected' ? 'bg-red-50 text-red-700' : 'bg-orange-50 text-orange-700'}`}>{doc.status}</span></div>

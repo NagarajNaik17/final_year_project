@@ -10,3 +10,5 @@ paddlepaddle
 paddleocr
 google-generativeai
 pytest
+groq
+py-solc-x

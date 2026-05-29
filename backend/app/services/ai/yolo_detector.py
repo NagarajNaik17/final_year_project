@@ -1,33 +1,39 @@
-import os
 from ultralytics import YOLO
 
-model_path = os.getenv("YOLO_MODEL_PATH", "best.pt")
-
-def detect_document_type(file_path: str) -> dict:
+def detect_document_type(file_path: str, doc_type: str = "Unknown") -> dict:
     """
-    Detects the type of document (Aadhaar, PAN, Voter ID) using YOLOv8.
+    Detects if the document is a valid Photo ID using a YOLOv8 classification model.
+    Dynamically routes to the Aadhaar or PAN model.
     """
-    # Try actual YOLO implementation
     try:
-        if os.path.exists(model_path):
-            model = YOLO(model_path)
-            results = model(file_path)
-            # Example parsing, assuming the model predicts "Aadhaar", "PAN", etc.
-            names = model.names
-            if len(results) > 0 and len(results[0].boxes) > 0:
-                top_class_id = int(results[0].boxes[0].cls[0].item())
-                doc_type_detected = names[top_class_id]
-                conf = float(results[0].boxes[0].conf[0].item())
-                return {"type": doc_type_detected, "confidence": conf, "yolo_score_out_of_30": min(conf * 30.0, 30.0)}
-    except Exception as e:
-        print(f"YOLO Execution Warning: {e}")
+        if doc_type == "aadhaar":
+            model_path = r"c:\Users\nagar\OneDrive\Desktop\final_year_project\model\runs\aadhar_fake_real_cls\weights\best.pt"
+        elif doc_type == "pan":
+            model_path = r"c:\Users\nagar\OneDrive\Desktop\final_year_project\model\runs\pan_fake_real_cls\weights\best.pt"
+        else:
+            print(f"[ML YOLO] Error: Unsupported doc_type '{doc_type}'")
+            return {"type": "Unknown (Invalid)", "confidence": 0.0, "yolo_score_out_of_70": 0.0}
 
-    # Fallback mock implementation if model isn't available
-    doc_type = "Aadhaar"
-    filename = os.path.basename(file_path).lower()
-    if "pan" in filename:
-        doc_type = "PAN"
-    elif "voter" in filename:
-        doc_type = "Voter ID"
+        model = YOLO(model_path)
+        results = model(file_path)
         
-    return {"type": doc_type, "confidence": 0.9, "yolo_score_out_of_30": 27.0}
+        real_prob = 0.0
+        for r in results:
+            probs = r.probs
+            for k, v in r.names.items():
+                if v.lower() == "real":
+                    real_prob = probs.data[k].item()
+                    break
+
+        yolo_score = real_prob * 70.0
+        print(f"[ML YOLO] Detected as '{doc_type}'. P(Real) = {real_prob:.4f}. ML Score = {yolo_score:.2f}/70")
+        
+        return {
+            "type": f"{doc_type.capitalize()} (YOLO)",
+            "confidence": real_prob,
+            "yolo_score_out_of_70": yolo_score
+        }
+            
+    except Exception as e:
+        print(f"[ML YOLO] Execution Warning: {e}")
+        return {"type": "Unknown", "confidence": 0.0, "yolo_score_out_of_70": 0.0}

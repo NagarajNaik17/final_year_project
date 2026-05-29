@@ -19,8 +19,8 @@ def validate_document_with_gemini(extracted_text: str, document_type: str, file_
     try:
         genai.configure(api_key=api_key)
         
-        # Use gemini-1.5-pro-latest to avoid v1beta deprecation issues affecting standard flash models
-        model = genai.GenerativeModel('gemini-1.5-pro-latest', generation_config={"response_mime_type": "application/json"})
+        # Use gemini-1.5-flash to avoid v1beta deprecation issues affecting standard pro models
+        model = genai.GenerativeModel('gemini-1.5-flash', generation_config={"response_mime_type": "application/json"})
         
         image = Image.open(file_path)
         

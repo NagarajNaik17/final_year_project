@@ -12,3 +12,15 @@ build/
 
 # Logs
 *.log
+
+# Editor
+.vscode/
+
+# Local uploads and test artifacts
+backend/uploads/
+backend/*.jpg
+backend/*.jpeg
+backend/*.png
+
+# ML training data / local models
+model/

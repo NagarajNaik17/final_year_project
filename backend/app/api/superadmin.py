@@ -70,7 +70,7 @@ def approve_document(id: str, current_user: dict = Depends(require_superadmin)):
         
     if doc.get("status") == "Approved":
         return {"success": False, "message": "Already approved"}
-        
+
     # Check blockchain duplicates first BEFORE storing
     exists = check_document_exists_on_blockchain(doc["hash_value"])
     if exists:

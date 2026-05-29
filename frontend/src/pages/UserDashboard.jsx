@@ -41,6 +41,15 @@ export default function UserDashboard() {
     fetchDocs();
   }, []);
 
+  useEffect(() => {
+    const handleFocus = () => {
+      fetchDocs();
+    };
+
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, []);
+
   const fetchDocs = async () => {
     setLoading(true);
     try {
@@ -130,7 +139,12 @@ export default function UserDashboard() {
                  <tr key={doc._id} className="border-b border-slate-100 hover:bg-slate-50 transition-colors">
                      <td className="p-6 font-bold text-slate-800 flex items-center gap-2">
                          <FileText size={18} className="text-indigo-500" />
-                         {doc.doc_type || doc.document_type || "Unknown Document"}
+                         <div>
+                           <div>{doc.doc_type || doc.document_type || "Unknown Document"}</div>
+                           <div className="text-xs font-medium text-slate-400">
+                             Latest version: v{doc.version || 1}
+                           </div>
+                         </div>
                      </td>
                      <td className="p-6 text-sm font-medium text-slate-600">
                          {doc.original_filename || "document.pdf"}
@@ -214,7 +228,7 @@ export default function UserDashboard() {
                         <p className="text-xs font-bold text-slate-400 mb-3 tracking-wider uppercase">Verification Details</p>
                         <div className="flex justify-between items-center bg-white p-3 rounded-lg border border-slate-200 font-mono text-sm mb-2 shadow-sm">
                             <span className="text-slate-500 font-sans font-semibold">Total Match Score</span>
-                            <span className="font-bold text-indigo-600">{(viewDoc.total_score || 0).toFixed(1)} / 70</span>
+                            <span className="font-bold text-indigo-600">{(viewDoc.total_score || 0).toFixed(1)} / 100</span>
                         </div>
                         {viewDoc.ai_feedback && <p className="text-sm text-slate-600 mt-4 leading-relaxed bg-indigo-50/50 p-4 rounded-lg">{viewDoc.ai_feedback}</p>}
                     </div>
